@@ -6,14 +6,34 @@ from frappe.utils import nowdate
 
 from erpnext.setup.doctype.employee.test_employee import make_employee
 
+from hrms.hr.doctype.interview.test_interview import create_interview_type
+from hrms.hr.doctype.job_applicant.job_applicant import create_interview
 from hrms.hr.doctype.job_applicant.job_applicant import make_employee as map_applicant_to_employee
 from hrms.hr.doctype.job_offer.test_job_offer import create_job_offer
 from hrms.hr.doctype.job_opening.test_job_opening import get_job_opening
 from hrms.tests.test_utils import create_job_applicant
-from hrms.tests.utils import HRMSTestSuite
+from hrms.tests.utils import HRMSTestSuite, make_user
 
 
 class TestJobApplicant(HRMSTestSuite):
+	def test_onload_filters_out_cancelled_job_offer(self):
+		applicant = create_job_applicant()
+		job_offer = create_job_offer(job_applicant=applicant.name)
+		job_offer.submit()
+		job_offer.cancel()
+
+		applicant.onload()
+		onload = applicant.get("__onload") or {}
+		self.assertNotIn("job_offer", onload)
+
+		# positive case: active job offer should be loaded
+		active_job_offer = create_job_offer(job_applicant=applicant.name)
+		active_job_offer.submit()
+
+		applicant.onload()
+		onload = applicant.get("__onload") or {}
+		self.assertEqual(onload.get("job_offer"), active_job_offer.name)
+
 	def test_job_applicant_naming(self):
 		applicant = frappe.get_doc(
 			{
@@ -44,7 +64,7 @@ class TestJobApplicant(HRMSTestSuite):
 
 		# before creating employee
 		self.assertEqual(applicant.status, "Open")
-		self.assertEqual(job_offer.status, "Awaiting Response")
+		self.assertEqual(job_offer.status, "Draft")
 
 		# create employee
 		make_employee(user=applicant.name, job_applicant=applicant.name, company="_Test Company")
@@ -89,3 +109,16 @@ class TestJobApplicant(HRMSTestSuite):
 		self.assertEqual(employee.status, "Active")
 		self.assertEqual(employee.company, "_Test Company")
 		self.assertEqual(employee.department, "_Test Department - _TC")
+
+	def test_create_interview_permission(self):
+		applicant = create_job_applicant()
+		interviewer = make_user("test_interviewer1@example.com", "Interviewer")
+		hr_user = make_user("test_hr_user_interview@example.com", "HR User")
+		interview_type = create_interview_type("Technical Round", ["Python"], [interviewer])
+
+		with self.set_user(interviewer):
+			self.assertRaises(frappe.PermissionError, create_interview, applicant.name, interview_type.name)
+
+		with self.set_user(hr_user):
+			interview = create_interview(applicant.name, interview_type.name)
+			self.assertEqual(interview.job_applicant, applicant.name)
